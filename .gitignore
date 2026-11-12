@@ -1,0 +1,22 @@
+# Виртуальное окружение
+venv/
+.venv/
+env/
+
+# Кэш Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Артефакты тестирования
+test_data/plots/
+*.log
+
+# Окружение и редакторы
+.env
+.idea/
+.vscode/
+.DS_Store
