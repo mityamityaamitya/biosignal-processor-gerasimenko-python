@@ -360,6 +360,18 @@ PY
 > Скрипт удобно сохранить как `scripts/check_reference.py` и запускать в CI.
 > Он использует только `requests`, который уже есть в `requirements.txt`.
 
+### 7.1 Модульные тесты (без сервера)
+
+Конвейер и слой ввода проверяются отдельно от сети, на stdlib `unittest`:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Ожидаемо: `Ran 15 tests … OK`. Тесты фиксируют эталонные числа §3.2 (R-пики,
+границы, ширины, ЧСС, амплитуды, подавление артефакта) и коды ошибок разбора
+файла, поэтому после правок математики их нужно прогонять первыми.
+
 ---
 
 ## 8. Шаг 6. Проверка ошибок
@@ -676,23 +688,24 @@ docker inspect --format '{{.State.Health.Status}}' $(docker ps -q --filter ances
 Отмечайте по порядку; каждый пункт — команда и ожидаемый результат.
 
 - [ ] **1. Окружение.** `python -c "import numpy, scipy, fastapi"` → без ошибок, `ok 2.5.4 1.18.1`.
-- [ ] **2. Ядро без веба.** `python -c "import signal_processor"` → без ошибок (FastAPI в модуль не импортируется).
-- [ ] **3. Сервер поднят.** `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/variant` → `200`.
-- [ ] **4. Swagger.** `http://127.0.0.1:8000/docs` открывается, `POST /analyze` виден.
-- [ ] **5. OpenAPI.** `curl -s http://127.0.0.1:8000/openapi.json | head -c 200` → JSON со схемами.
-- [ ] **6. Основной анализ.** `POST /analyze?fs=250` → 6 событий, границы 108–127 … 1165–1190.
-- [ ] **7. Признаки.** `mean_qrs_width_ms ≈ 88.67`, `max_peak_amplitude ≈ 0.9956`, `heart_rate_bpm ≈ 70.75`.
-- [ ] **8. Автосверка.** скрипт из §7 → `OK: 6 событий …`.
-- [ ] **9. Ошибки.** все шесть сценариев из §8 → HTTP 400 и правильный код.
-- [ ] **10. Клиент.** `python test_data/test_client.py` → таблицы, 6 событий, два PNG.
-- [ ] **11. Коды клиента.** `.dat` → 2, закрытый порт → 1.
-- [ ] **12. Синтетика.** генератор + клиент `--no-plots` → 6 событий, ЧСС ≈ 72.
-- [ ] **13. Многоколоночность.** `column=1` на файле с колонкой времени → 4 события, 90 BPM.
-- [ ] **14. Docker.** `docker compose up --build -d` → `docker compose ps` показывает `(healthy)`.
-- [ ] **15. Docker-анализ.** те же `curl` к контейнеру → те же 6 событий и числа.
-- [ ] **16. Логи.** `docker compose logs --tail=50` → без `ERROR` и стектрейсов.
-- [ ] **17. Остановка.** `docker compose down` → контейнер и сеть удалены.
-- [ ] **18. Git.** `git branch` → только `dev`; `git log --oneline` → ≥3 коммитов; `git status` чистый.
+- [ ] **2. Ядро без веба.** `python -c "import biosignal.processing"` → без ошибок (FastAPI в пакет не импортируется).
+- [ ] **3. Модульные тесты.** `python -m unittest discover -s tests -v` → `Ran 15 tests … OK`.
+- [ ] **4. Сервер поднят.** `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/variant` → `200`.
+- [ ] **5. Swagger.** `http://127.0.0.1:8000/docs` открывается, `POST /analyze` виден.
+- [ ] **6. OpenAPI.** `curl -s http://127.0.0.1:8000/openapi.json | head -c 200` → JSON со схемами.
+- [ ] **7. Основной анализ.** `POST /analyze?fs=250` → 6 событий, границы 108–127 … 1165–1190.
+- [ ] **8. Признаки.** `mean_qrs_width_ms ≈ 88.67`, `max_peak_amplitude ≈ 0.9956`, `heart_rate_bpm ≈ 70.75`.
+- [ ] **9. Автосверка.** скрипт из §7 → `OK: 6 событий …`.
+- [ ] **10. Ошибки.** все шесть сценариев из §8 → HTTP 400 и правильный код.
+- [ ] **11. Клиент.** `python test_data/test_client.py` → таблицы, 6 событий, два PNG.
+- [ ] **12. Коды клиента.** `.dat` → 2, закрытый порт → 1.
+- [ ] **13. Синтетика.** генератор + клиент `--no-plots` → 6 событий, ЧСС ≈ 72.
+- [ ] **14. Многоколоночность.** `column=1` на файле с колонкой времени → 4 события, 90 BPM.
+- [ ] **15. Docker.** `docker compose up --build -d` → `docker compose ps` показывает `(healthy)`.
+- [ ] **16. Docker-анализ.** те же `curl` к контейнеру → те же 6 событий и числа.
+- [ ] **17. Логи.** `docker compose logs --tail=50` → без `ERROR` и стектрейсов.
+- [ ] **18. Остановка.** `docker compose down` → контейнер и сеть удалены.
+- [ ] **19. Git.** `git branch` → только `dev`; `git log --oneline` → ≥3 коммитов; `git status` чистый.
 
 ---
 
@@ -752,8 +765,15 @@ docker compose logs --tail=20 2>/dev/null
 
 Где что лежит:
 
-- **маршруты, валидация, формат ошибок** — `app.py`;
-- **фильтрация, детекция, признаки** — `signal_processor.py` (без FastAPI);
+- **маршруты** — `biosignal/api/routes/` (`analyze.py`, `variant.py`);
+- **схемы ответа и Swagger** — `biosignal/api/schemas.py`;
+- **сборка и округление ответа** — `biosignal/api/response.py`;
+- **формат ошибок** — `biosignal/api/application.py` + `biosignal/errors.py`;
+- **валидация запроса** — `biosignal/io/validators.py`;
+- **разбор файла** — `biosignal/io/parser.py`;
+- **фильтрация, детекция, признаки** — `biosignal/processing/` (без FastAPI);
+- **фасады для шаблона задания** — `app.py`, `signal_processor.py`;
+- **тесты** — `tests/`;
 - **клиент и графики** — `test_data/test_client.py`;
 - **синтетика** — `test_data/synthetic_ecg_generator.py`.
 

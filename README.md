@@ -32,8 +32,8 @@
 - FastAPI автоматически строит OpenAPI-схему и Swagger UI по аннотациям типов, а
   `UploadFile` + `python-multipart` закрывают загрузку файлов без ручного разбора
   multipart-запроса.
-- Математика вынесена в `signal_processor.py` — чистые функции без импортов
-  веб-фреймворка, поэтому её можно тестировать и переиспользовать отдельно от сети.
+- Математика вынесена в пакет `biosignal.processing` — классы без импортов
+  веб-фреймворка, поэтому конвейер тестируется и переиспользуется отдельно от сети.
 
 ---
 
@@ -43,13 +43,37 @@
 biosignal-processor-gerasimenko-python/
 ├── .gitignore                        # venv/, __pycache__/, plots/, логи
 ├── requirements.txt                  # зафиксированные версии зависимостей (pip freeze)
-├── app.py                            # FastAPI: маршруты, валидация, сборка JSON, Swagger
-├── signal_processor.py               # ядро: чистые функции фильтрации, детекции и признаков
+├── app.py                            # точка входа: create_app() + запуск uvicorn
+├── signal_processor.py               # фасад ядра: process_biosignal() и реэкспорт классов
 ├── config.py                         # все «магические числа» именованными константами
 ├── README.md                         # эта документация
+├── RUNBOOK.md                        # запуск, проверка, диагностика
 ├── Dockerfile                        # образ python:3.14-slim + libgomp1
 ├── docker-compose.yml                # сервис biosignal, порт 8000, healthcheck
 ├── .dockerignore                     # что не попадает в образ
+├── biosignal/                        # пакет приложения, разбитый по слоям
+│   ├── errors.py                     # SignalInputError: код ошибки + пояснение
+│   ├── api/                          # слой HTTP (FastAPI)
+│   │   ├── application.py            # create_app(): маршруты и обработчик ошибок
+│   │   ├── dependencies.py           # фабрики компонентов для Depends
+│   │   ├── schemas.py                # pydantic-модели и документация Swagger
+│   │   ├── response.py               # AnalysisResponseBuilder: сборка и округление
+│   │   └── routes/
+│   │       ├── analyze.py            # POST /analyze
+│   │       └── variant.py            # GET /variant
+│   ├── io/                           # слой ввода
+│   │   ├── parser.py                 # SignalTextParser: файл → строки чисел → колонка
+│   │   └── validators.py             # AnalysisRequestValidator: расширение, fs, column
+│   └── processing/                   # математика без импортов веба
+│       ├── pipeline.py               # EcgPipeline: оркестратор этапов
+│       ├── filters.py                # MovingAverageFilter, ButterworthHighPassFilter
+│       ├── detectors.py              # RPeakDetector, QrsBoundaryDetector
+│       ├── features.py               # FeatureExtractor
+│       ├── models.py                 # QrsComplex, SignalFeatures, ProcessingResult
+│       └── signal_math.py            # общие функции над массивами
+├── tests/                            # unittest, без внешних зависимостей
+│   ├── test_pipeline.py              # сверка с эталонными числами §3.2
+│   └── test_parser.py                # разбор файла и коды ошибок
 └── test_data/
     ├── raw_signal.txt                # реальная ЭКГ: 1250 отсчётов, 5 с, 250 Гц
     ├── test_client.py                # requests + matplotlib: POST и два графика
@@ -59,13 +83,23 @@ biosignal-processor-gerasimenko-python/
 
 Разделение ответственности:
 
-- **`signal_processor.py`** — только NumPy/SciPy/stdlib. Ни одного импорта
-  FastAPI, Flask или uvicorn: модуль не знает, что его вызвали по HTTP.
-- **`app.py`** — только транспорт: проверка расширения, частоты дискретизации,
-  колонки и содержимого файла, вызов конвейера, округление и сериализация.
-- **`config.py`** — только именованные константы с комментариями. В `app.py` и
-  `signal_processor.py` нет ни одного «магического числа»: окно сглаживания,
-  частота среза, пороги, лимиты и порт берутся отсюда.
+- **`biosignal/processing`** — только NumPy/SciPy/stdlib. Каждый этап — отдельный
+  класс с внедряемыми параметрами: `MovingAverageFilter`, `ButterworthHighPassFilter`,
+  `RPeakDetector`, `QrsBoundaryDetector`, `FeatureExtractor`. `EcgPipeline` собирает
+  их в конвейер, а доменные модели (`QrsComplex`, `SignalFeatures`,
+  `ProcessingResult`) не знают ни про JSON, ни про HTTP.
+- **`biosignal/io`** — `SignalTextParser` разбирает файл и выбирает колонку,
+  `AnalysisRequestValidator` проверяет расширение, `fs`, `column` и длину сигнала.
+  Оба бросают `SignalInputError` с кодом из `config`.
+- **`biosignal/api`** — `create_app()` собирает FastAPI, маршруты разнесены по
+  `routes/`, схемы — в `schemas.py`, сборка ответа — в `response.py`, зависимости
+  (готовые компоненты) — в `dependencies.py`. Слой API не содержит формул.
+- **`app.py`** и **`signal_processor.py`** — тонкие фасады: первый отдаёт объект
+  `app` для uvicorn, второй — функцию `process_biosignal` и реэкспорт классов,
+  как ожидает шаблон задания. Вся реализация — в пакете `biosignal`.
+- **`config.py`** — единственный источник «магических чисел»: окно сглаживания,
+  частота среза, пороги, лимиты, порт. Компоненты получают значения через
+  параметры конструктора со значениями по умолчанию из `config`.
 
 ---
 
@@ -446,6 +480,16 @@ curl -s http://127.0.0.1:8000/variant
 
 ## 9. Тестирование
 
+### Модульные тесты
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Проверяются конвейер на эталонной записи (R-пики, границы, ширины, ЧСС,
+амплитуды, подавление артефакта) и слой ввода (разбор чисел, колонки, коды
+ошибок). Внешних зависимостей, кроме уже установленных, не требуется.
+
 ### Swagger UI
 
 1. Открыть `http://127.0.0.1:8000/docs`.
@@ -511,6 +555,7 @@ docker compose down
 | 2 | `feat: реализовать фильтрацию, детекцию QRS и расчёт признаков` | `signal_processor.py` |
 | 3 | `feat: собрать REST API, документацию и клиент тестирования` | `app.py`, `README.md`, `test_data/test_client.py`, генератор |
 | 4 | `build: добавить Dockerfile и docker-compose для запуска сервера` | `Dockerfile`, `docker-compose.yml`, `.dockerignore` |
+| 5 | `refactor: разнести сервер на слои и классы` | пакет `biosignal/`, тонкие фасады `app.py` и `signal_processor.py`, `tests/` |
 
 Формат сообщений — Conventional Commits, без `Co-Authored-By`.
 
